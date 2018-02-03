@@ -1,14 +1,15 @@
+# -*- coding: utf-8 -*-
 import subprocess
 import os
 import re
-import shlex
+import pipes
 import fnmatch
 import yaml
 
 # Absolute path to the config file
-CONFIG_FILE_LOCATION = '/mnt/d/SynthesesEPL/Syntheses/src'  # Linux Location
-# CONFIG_FILE_LOCATION = 'D:\SynthesesEPL\Syntheses\src'  # Windows Location
-CONFIG_FILE_NAME = 'config.yml'
+CONFIG_FILE_LOCATION = '/home/martin/Documents/Syntheses/src'  # Linux Location
+#CONFIG_FILE_LOCATION = 'C:/Users/marti/Documents/UCL/Syntheses/src'  # Windows Location
+CONFIG_FILE_NAME = '/home/martin/Documents/Syntheses-PDF-Builder-master/config.yml'
 CONFIG_FILE_FULL_PATH = os.path.abspath(os.path.join(CONFIG_FILE_LOCATION, CONFIG_FILE_NAME))
 
 
@@ -29,11 +30,15 @@ def main():
 
             # to handle some tricky path cases
             syntheses_folder = os.path.abspath(os.path.join(CONFIG_FILE_LOCATION, document['input_base']))
+            document['output_base'] = '/media/martin/OS/Users/marti/Documents/UCL/EPL-Drive'
             out_folder = os.path.abspath(os.path.join(CONFIG_FILE_LOCATION, document['output_base']))
 
             # mapping dictionary to make life simpler
             mapping_dictionary, default_argument_mapping = build_dictionary(document)
-
+            mapping_dictionary['name'] = to_string(mapping_dictionary['name'])
+            mapping_dictionary['type']['summary'] = mapping_dictionary['type']['summary'].encode('utf-8')
+            mapping_dictionary['month'][3] = mapping_dictionary['month'][3].encode('utf-8')   
+            
             # find files that matches default file format : courseLabel-courseId-typeFile.tex
             file_list = find_latex_files(syntheses_folder)  # I suppose here the src folder is not empty
 
@@ -50,21 +55,26 @@ def main():
             create_all_directories(directories_array)
 
             # bulk build stuff
+            length = len(filtered_array)
+            i = 0
             for basename, dirname, translated_properties in filtered_array:
+                i = i+1
                 try:
                     sub_command = translated_properties['buildCommand']
                     subprocess.call(sub_command, shell=True, cwd=dirname, stdout=DEVNULL)
-                    print("\t The following file was successfully builded : " + basename)
-                except subprocess.CalledProcessError as e:
+                    if translated_properties['type'] in ('Examens', 'Interros'):
+                        sub_command_sol = translated_properties['buildCommandnotsol']
+                        subprocess.call(sub_command_sol, shell=True, cwd=dirname, stdout=DEVNULL)
+                    print("\t " +str(i*100/length) +"% : The following file was successfully builded : " + basename)
+                except subprocess.CalledProcessError:
                     print("Cannot compile %s into a pdf" % basename)
             print("End of building step")
 
             # clean task : I don't like to have aux , log , synctex.gz files on the output so time to clean it
             print("Remove the temp files produced by latex : aux log synctex.gz")
             try:
-                # remove_temp_files(out_folder)
-                print("Remove to be fixed")
-            except subprocess.CalledProcessError as e:
+                remove_temp_files(out_folder)
+            except subprocess.CalledProcessError:
                 print("Cannot remove the temp files produced by pdflatex")
 
         except yaml.YAMLError as exc:
@@ -83,10 +93,10 @@ def find_latex_files(syntheses_folder):
 
 
 def remove_temp_files(output_folder):
-    remove_tuple = (".bcf", ".gnuplot", ".tdo", ".xml", ".aux", ".log", ".synctex.gz")
+    remove_tuple = ('.bcf', 'out', '.gnuplot', '.tdo', '.xml', '.aux', '.log', '.synctex.gz', '.toc')
     for root, dirnames, filenames in os.walk(output_folder):
         for file in filenames:
-            if (file.endswith(x) for x in remove_tuple):
+            if (file.endswith(remove_tuple)):
                 os.remove(os.path.join(root, file))
     print("Files removed")
 
@@ -98,6 +108,7 @@ def build_command(file, out_folder, mapping_dictionary):
     # filename common pattern extractor ; to handle most case
     common_pattern = re.compile('(?P<course_label>\w+)-(?P<course_id>\w+)-(?P<type>\w+)(?P<rest>.+)?.tex')
     result = common_pattern.match(basename)
+    
 
     # dictionaries for custom purpose
     name_dictionary = mapping_dictionary['name']
@@ -120,6 +131,8 @@ def build_command(file, out_folder, mapping_dictionary):
         # to extract option and code, I do this
         option_code_pattern = re.compile('(?P<option>[a-zA-Z]+)(?P<code>[0-9]+)')
         option_code_result = option_code_pattern.match(course_id)
+        
+        check = True
 
         # create a easy to use object with the values extracted and mapped with dictionaries
         translated_properties.update({
@@ -142,17 +155,27 @@ def build_command(file, out_folder, mapping_dictionary):
             translated_properties['quadri-folder'] = quadri_dictionary[quadri] if quadri in quadri_dictionary else None
 
         if string_rest:
-            # pattern à supporter à l'avenir : -Sol comme -2015-Janvier-All-Sol
-            rest_pattern = re.compile('-(?P<year>[0-9]+)-(?P<month>[a-zA-Z]+)-(?P<minmaj>All|Mineure|Majeure)')
+            # pattern a supporter a l'avenir : -Sol comme -2015-Janvier-All-Sol
+            rest_pattern = re.compile('-(?P<year>[0-9]+)-(?P<month>Janvier|Février|Mars|Avril|Mai|Juin|Août|Septembre|Octobre|Novembre|Décembre|Jan)-(?P<minmaj>All|Mineure|Majeure|Min|Maj)')
             rest_result = rest_pattern.match(string_rest)
 
             if rest_result:
                 translated_properties['year'] = rest_result.group('year')
                 translated_properties['month'] = rest_result.group('month')
+                if translated_properties['month'] == 'Jan':
+                    translated_properties['month'] = 'Janvier'
                 translated_properties['minmaj'] = rest_result.group('minmaj')
-
-        translated_properties = generate_folder_name(translated_properties, basename, out_folder)
-
+                check = False
+                
+        translated_properties = generate_folder_name(translated_properties, basename, dirname, out_folder)
+    
+        if check and string_rest:
+            print(basename + ' not matched')
+            translated_properties = {}
+        
+    else: 
+        print('File not found in database: ',file)
+        
     return basename, dirname, translated_properties
 
 
@@ -194,8 +217,10 @@ def build_dictionary(document):
 
 # Generate the path and the build command in one time
 # Warning : ugly if cascade code coming XD
-def generate_folder_name(translated_properties, basename, out_folder):
+def generate_folder_name(translated_properties, basename, dirname, out_folder):
+                              
     # if the algo cannot guess the rightful path, put it in the default folder
+    out_folder_name = ""
     if not check_dictionary(translated_properties, 'quadri-folder'):
         translated_properties['folderPath'] = out_folder
     else:
@@ -206,11 +231,11 @@ def generate_folder_name(translated_properties, basename, out_folder):
                 = os.path.abspath(os.path.join(translated_properties['folderPath'], translated_properties['option']))
             if check_dictionary(translated_properties, 'quadri'):
                 translated_properties['folderPath'] \
-                    = os.path.abspath(os.path.join(translated_properties['folderPath'],
-                                                   'Q' + str(translated_properties['quadri'])))
+                    = str(os.path.abspath(os.path.join(translated_properties['folderPath'],
+                                                   'Q' + str(translated_properties['quadri']))))
                 if check_dictionary(translated_properties, 'courseLabel') and check_dictionary(translated_properties,
                                                                                                'name'):
-                    folder_name = translated_properties['courseLabel']
+                    folder_name = 'L' + translated_properties['courseLabel']
                     if check_dictionary(translated_properties, 'name'):
                         folder_name += ' - ' + translated_properties['name']
                     # Because some crazy guys put invalid chars inside name XD
@@ -225,18 +250,57 @@ def generate_folder_name(translated_properties, basename, out_folder):
                                 and check_dictionary(translated_properties, 'month'):
                             translated_properties['folderPath'] \
                                 = os.path.abspath(os.path.join(translated_properties['folderPath'],
-                                                               translated_properties['year'] + ' - ' +
+                                                               translated_properties['year'] + '_' +
                                                                translated_properties['month']))
-
+                            if translated_properties['minmaj'] == 'All':
+                                out_folder_name = translated_properties['courseLabel'] + '-' + translated_properties['year'] + '-' + translated_properties['month'] + '-Sol'
+                            else:
+                                out_folder_name = translated_properties['courseLabel'] + '-' + translated_properties['year'] + '-' + translated_properties['month'] + '-' + translated_properties['minmaj'] + '-Sol'
+                        else:
+                            if translated_properties['type'] == "Synthèses":
+                                out_folder_name = 'Synthèse' + '-' + basename.split('-')[0] +'-' + translated_properties['courseLabel']
+                            elif translated_properties['type'] == "Formulaires":
+                                if dirname[-1] == 'e':
+                                    out_folder_name = 'formulaire' + '-' + basename.split('-')[0] +'-' + translated_properties['courseLabel']
+                                else:
+                                    out_folder_name = 'formulaire' + dirname[-1] +'-' + basename.split('-')[0] +'-' + translated_properties['courseLabel']
+                            else:
+                                out_folder_name = translated_properties['type'] + '-' + basename.split('-')[0] +'-' + translated_properties['courseLabel']
+    
+#    if basename == 'ecopol-ECGE1115-summary.tex':
+#        translated_properties['folderPath'] = os.path.abspath(os.path.join(out_folder, 'BACHELIER/Mineures externes/LECGE1115 - Economie politique/Synthèses'))
+#        out_folder_name = 'Synthèse-ecopol-ECGE1115'  
+#    if basename == 'tdo-ECGE1317-summary.tex':
+#        translated_properties['folderPath'] = os.path.abspath(os.path.join(out_folder, 'BACHELIER/Mineures externes/LECGE1317 - Théorie des organisations/Synthèses'))
+#        out_folder_name = 'Synthèse-tdo-ECGE1317' 
+#    if basename == 'tdo-ECGE1317-summary.tex':
+#        translated_properties['folderPath'] = os.path.abspath(os.path.join(out_folder, 'BACHELIER/Mineures externes/LECGE1317 - Théorie des organisations/CM'))
+#        out_folder_name = 'CM-tdo-ECGE1317' 
+                    
     # add the build command to this
     # Secure the bash command to prevent quote issues
-    sub_build_command = 'pdflatex -interaction nonstopmode -output-format {} -output-directory {} {}'
+    sub_build_command = 'pdflatex -interaction nonstopmode -output-format {} -output-directory {} -jobname {} {}'
     translated_properties['buildCommand'] = sub_build_command.format(
             'pdf',
-            shlex.quote(translated_properties['folderPath']),
-            shlex.quote(basename)
-    )
-
+            pipes.quote(translated_properties['folderPath']),
+            pipes.quote(out_folder_name),
+            pipes.quote(basename)
+            )
+    
+    # Exam/test without solution
+    if translated_properties['type'] in ('Examens','Interros'):
+        sub_build_command = 'latexmk -pdf -pdflatex="pdflatex -jobname={} -output-directory {} -shell-escape -enable-write18 \
+                            {}" -use-make {}'
+        #translated_properties.update('buildCommandnotsol')
+        translated_properties['buildCommandnotsol'] = sub_build_command.format(
+            pipes.quote(out_folder_name[:-4]),
+            pipes.quote(translated_properties['folderPath']),
+            pipes.quote('\def\Sol{false} \input{%S}'),
+            pipes.quote(basename)
+            )
+    
+    if basename.startswith('analog'):
+        print('stop')
     return translated_properties
 
 
@@ -255,7 +319,7 @@ def check_dictionary(my_dict, my_property):
 def create_all_directories(directories):
     for path in directories:
         if not os.access(path, os.F_OK):
-            os.makedirs(path, exist_ok=True)
+            os.makedirs(path)
 
 
 # https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx
@@ -266,5 +330,11 @@ def sanitize_folder_name(string):
         result = result.replace(i_char, ' ')
     return result
 
+def to_string(dict):
+    dict_new = dict
+    for s in dict:
+        dict_new[s] = dict[s].encode('utf-8')
+    return dict_new
+    
 
 if __name__ == "__main__": main()

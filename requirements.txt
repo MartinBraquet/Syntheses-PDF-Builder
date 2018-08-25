@@ -1,0 +1,2 @@
+####### Only for advanced_script.py #######
+PyYAML==3.12
